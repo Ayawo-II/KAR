@@ -56,7 +56,13 @@ class PinService {
   }
 
   /// Verifie le code saisi.
+  ///
+  /// Renvoie toujours false tant qu'un blocage est en cours, meme avec le bon
+  /// code : la temporisation protege contre le balayage de toutes les combinaisons
+  /// sur l'appareil, elle ne doit pas pouvoir etre contournee.
   Future<bool> verifierPin(String pin) async {
+    if (await dureeBlocageRestante() != null) return false;
+
     final prefs = await SharedPreferences.getInstance();
 
     final empreinteAttendue = prefs.getString(_cleEmpreinte) ?? '';
