@@ -1,0 +1,20 @@
+# Fichiers propres à la machine et aux éditeurs
+.idea/
+.vscode/
+*.iml
+*.iws
+
+# Dart / Flutter
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# OS
+.DS_Store
+Thumbs.db
