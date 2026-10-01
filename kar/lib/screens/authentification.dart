@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:kar/screens/create_account.dart';
 import 'package:kar/services/auth_service.dart';
 import '../screens/home_screen.dart';
 
@@ -51,6 +52,21 @@ class Authentification extends StatelessWidget {
                   }
                 },
                 child: Text("Se connecter"),
+              ),
+              SizedBox(height: 12),
+              TextButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => CreateAccount(
+                        toggleTheme: toggleTheme,
+                        isDarkMode: isDarkMode,
+                      ),
+                    ),
+                  );
+                },
+                child: const Text("Créer un compte"),
               ),
             ],
           ),

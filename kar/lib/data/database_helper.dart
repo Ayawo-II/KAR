@@ -1,14 +1,11 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:kar/models/composition.dart';
 import 'package:kar/models/matiere.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
+import 'package:sqflite_common/sqlite_api.dart';
 
 import '../models/annee_courante.dart';
 import '../models/utilisateur.dart';
+import 'db_platform.dart';
 
 class DatabaseHelper {
   DatabaseHelper._();
@@ -23,11 +20,12 @@ class DatabaseHelper {
 
   Future<Database> initDB() async {
     WidgetsFlutterBinding.ensureInitialized();
-    return await openDatabase(
-      join(await getDatabasesPath(), 'kar_database.db'),
-      version: 1,
-      onCreate: (db, version) async {
-        await db.execute('''
+    return platformDatabaseFactory.openDatabase(
+      await platformDatabasePath,
+      options: OpenDatabaseOptions(
+        version: 1,
+        onCreate: (db, version) async {
+          await db.execute('''
           CREATE TABLE anneeCourante (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               anneeDebut TEXT NOT NULL,
@@ -41,7 +39,7 @@ class DatabaseHelper {
           );
         ''');
 
-        await db.execute('''
+          await db.execute('''
           CREATE TABLE utilisateur (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nom VARCHAR(100),
@@ -50,7 +48,7 @@ class DatabaseHelper {
           );
         ''');
 
-        await db.execute('''
+          await db.execute('''
           CREATE TABLE matiere (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             libMatiere VARCHAR(100) NOT NULL,
@@ -62,7 +60,7 @@ class DatabaseHelper {
           );
         ''');
 
-        await db.execute('''
+          await db.execute('''
           CREATE TABLE composition (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type VARCHAR(10) NOT NULL,
@@ -72,7 +70,7 @@ class DatabaseHelper {
           );  
         ''');
 
-        await db.execute('''
+          await db.execute('''
           CREATE TABLE programme (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             jour TEXT NOT NULL,
@@ -80,7 +78,7 @@ class DatabaseHelper {
           );
         ''');
 
-        await db.execute('''
+          await db.execute('''
           CREATE TABLE matiere_programme (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             matiereId INTEGER NOT NULL,
@@ -91,27 +89,27 @@ class DatabaseHelper {
             UNIQUE (matiereId, programmeId)
           );
         ''');
-
-      },
+        },
+      ),
     );
   }
 
   // enregistrer un utilisateur
-  Future<int> ajouterUtilisateur(Utilisateur user) async{
+  Future<int> ajouterUtilisateur(Utilisateur user) async {
     final Database db = await database;
-    
+
     return await db.insert(
-        'utilisateur',
+      'utilisateur',
       user.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace
+      conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
   // Enregistrer une nouvelle année et matières
   Future<void> ajouterAnneeEtMatieres(
-      AnneeCourante annee,
-      List<Matiere> matieres,
-      ) async {
+    AnneeCourante annee,
+    List<Matiere> matieres,
+  ) async {
     final db = await database;
 
     await db.transaction((txn) async {
@@ -159,7 +157,11 @@ class DatabaseHelper {
   }
 
   // plannifier un devoir
-  Future<void> planifierDevoir(Matiere matiere, String type, DateTime date) async {
+  Future<void> planifierDevoir(
+    Matiere matiere,
+    String type,
+    DateTime date,
+  ) async {
     final Database db = await database;
 
     final composition = Composition(
@@ -173,7 +175,5 @@ class DatabaseHelper {
       composition.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
-
   }
-
 }

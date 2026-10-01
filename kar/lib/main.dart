@@ -1,10 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:kar/screens/authentification.dart';
-import 'package:kar/screens/create_account.dart';
-import 'package:kar/screens/home_screen.dart';
-import 'package:kar/services/auth_service.dart';
-import 'package:sqflite/sqflite.dart';
 
 import 'data/database_helper.dart';
 
@@ -37,8 +34,11 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Flutter Demo',
+      title: 'KAR',
       theme: isDarkMode ? ThemeData.dark() : ThemeData.light(),
+      locale: const Locale('fr'),
+      supportedLocales: const [Locale('fr'), Locale('en')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
       //home: HomeScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode),
       home: Authentification(toggleTheme: toggleTheme, isDarkMode: isDarkMode),
     );

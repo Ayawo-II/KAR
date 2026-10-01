@@ -61,7 +61,7 @@ class _AccountScreenState extends State<CreateAccount> {
         SnackBar(content: Text("Utilisateur enregistré avec succès !")),
       );
       
-      Navigator.push(
+      Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => Authentification(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode))
       );
