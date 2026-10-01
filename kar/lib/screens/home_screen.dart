@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 
 import '../data/database_helper.dart';
+import '../models/composition.dart';
 import '../models/matiere.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
@@ -26,7 +27,10 @@ class _HomeScreenState extends State<HomeScreen> {
   DateTime _jourSelectionne = DateTime.now();
 
   bool _anneeConfiguree = true;
-  bool _verificationAnnee = true;
+  bool _chargement = true;
+
+  /// Ce que contient chaque jour affiche, indexe par journee.
+  Map<DateTime, List<_Entree>> _agenda = {};
 
   @override
   void initState() {
@@ -38,11 +42,104 @@ class _HomeScreenState extends State<HomeScreen> {
     final annee = await DatabaseHelper.instance.recupererAnneeCourante();
     if (!mounted) return;
 
+    setState(() => _anneeConfiguree = annee != null);
+
+    await _chargerAgenda();
+  }
+
+  /// Charge les compositions, les journees de revision et les evenements
+  ///_personnels autour du mois affiche, marge comprise pour que le changement
+  /// de page n'affiche jamais de mois vide.
+  Future<void> _chargerAgenda() async {
+    final debut = DateTime(_jourFocus.year, _jourFocus.month - 1, 1);
+    final fin = DateTime(_jourFocus.year, _jourFocus.month + 2, 0);
+
+    final db = DatabaseHelper.instance;
+
+    final compositions = await db.recupererCompositions(
+      debut: debut,
+      fin: fin,
+    );
+    final programmes = await db.recupererProgrammes(
+      debut: debut,
+      fin: fin,
+    );
+    final evenements = await db.recupererEvenements(
+      debut: debut,
+      fin: fin,
+    );
+
+    if (!mounted) return;
+
+    final agenda = <DateTime, List<_Entree>>{};
+    void ajouter(DateTime jour, _Entree entree) {
+      final cle = _journee(jour);
+      agenda.putIfAbsent(cle, () => <_Entree>[]).add(entree);
+    }
+
+    for (final item in compositions) {
+      final composition = item.composition;
+      final estExamen = composition.type == TypeComposition.examen;
+      ajouter(
+        composition.date,
+        _Entree(
+          titre: item.libMatiere,
+          sousTitre: TypeComposition.libelle(composition.type),
+          icone: estExamen
+              ? Icons.assignment_turned_in_outlined
+              : Icons.assignment_outlined,
+          couleur: estExamen
+              ? Theme.of(context).colorScheme.error
+              : Theme.of(context).colorScheme.primary,
+        ),
+      );
+    }
+
+    for (final item in programmes) {
+      ajouter(
+        item.programme.jour,
+        _Entree(
+          titre: 'Révision',
+          sousTitre: item.matieres.isEmpty
+              ? 'Aucune matière'
+              : item.matieres
+                  .map((matiere) => matiere.libMatiere)
+                  .join(', '),
+          icone: Icons.menu_book_outlined,
+          couleur: AppTheme.secondaire,
+        ),
+      );
+    }
+
+    for (final evenement in evenements) {
+      var jour = _journee(evenement.dateDebut);
+      final dernier = _journee(evenement.dateFin);
+
+      while (!jour.isAfter(dernier)) {
+        ajouter(
+          jour,
+          _Entree(
+            titre: evenement.titre,
+            sousTitre: evenement.categorie,
+            icone: Icons.event_outlined,
+            couleur: Theme.of(context).colorScheme.tertiary,
+          ),
+        );
+        jour = jour.add(const Duration(days: 1));
+      }
+    }
+
+    if (!mounted) return;
     setState(() {
-      _anneeConfiguree = annee != null;
-      _verificationAnnee = false;
+      _agenda = agenda;
+      _chargement = false;
     });
   }
+
+  static DateTime _journee(DateTime date) =>
+      DateTime(date.year, date.month, date.day);
+
+  List<_Entree> _entreesDuJour() => _agenda[_journee(_jourSelectionne)] ?? const [];
 
   void _message(String texte) {
     ScaffoldMessenger.of(context)
@@ -112,6 +209,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     _message('${type == 'devoir' ? 'Devoir' : 'Examen'} planifié le '
         '${jour.day}/${jour.month}/${jour.year}');
+    _chargerAgenda();
   }
 
   Future<String?> _demanderType() {
@@ -197,40 +295,59 @@ class _HomeScreenState extends State<HomeScreen> {
         onDeconnexion: _confirmerDeconnexion,
       ),
       body: SafeArea(
-        child: _verificationAnnee
+        child: _chargement
             ? const Center(child: CircularProgressIndicator())
             : ListView(
                 children: [
-                  TableCalendar<void>(
+                  TableCalendar<_Entree>(
                     locale: 'fr_FR',
                     firstDay: DateTime.utc(2000),
                     lastDay: DateTime.utc(2100, 12, 31),
                     focusedDay: _jourFocus,
+                    availableGestures: AvailableGestures.horizontalSwipe,
                     selectedDayPredicate: (jour) =>
                         isSameDay(_jourSelectionne, jour),
+                    eventLoader: (jour) =>
+                        _agenda[_journee(jour)] ?? const <_Entree>[],
+                    calendarBuilders: CalendarBuilders<_Entree>(
+                      markerBuilder: (context, jour, entrees) {
+                        if (entrees.isEmpty) return null;
+
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              for (final entree in entrees.take(3))
+                                Container(
+                                  width: 5,
+                                  height: 5,
+                                  margin: const EdgeInsets.symmetric(
+                                    horizontal: 1,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: entree.couleur,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                     onDaySelected: (jourSelectionne, jourFocus) {
                       setState(() {
                         _jourSelectionne = jourSelectionne;
                         _jourFocus = jourFocus;
                       });
                     },
+                    onPageChanged: (jourFocus) {
+                      setState(() => _jourFocus = jourFocus);
+                      _chargerAgenda();
+                    },
                   ),
-                  if (!_anneeConfiguree)
-                    _Bandeau(
-                      message:
-                          'Aucune année académique configurée. Commencez par en '
-                          'créer une.',
-                      action: 'Configurer',
-                      onPressed: () => _ouvrir(const AnneeCouranteScreen()),
-                    )
-                  else
-                    _Bandeau(
-                      message:
-                          'Planning du ${_jourSelectionne.day}/'
-                          '${_jourSelectionne.month}/${_jourSelectionne.year}',
-                      action: 'Planifier',
-                      onPressed: () => _planifier(_jourSelectionne),
-                    ),
+                  _legende(),
+                  _agendaDuJour(),
                   _grille(
                     [
                       _Carte(
@@ -266,23 +383,157 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _legende() {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Wrap(
+        spacing: 16,
+        children: [
+          _pastille('Devoir', theme.colorScheme.primary),
+          _pastille('Examen', theme.colorScheme.error),
+          _pastille('Révision', AppTheme.secondaire),
+          _pastille('Événement', theme.colorScheme.tertiary),
+        ],
+      ),
+    );
+  }
+
+  Widget _pastille(String libelle, Color couleur) {
+    final theme = Theme.of(context);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: couleur, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(libelle, style: theme.textTheme.bodySmall),
+      ],
+    );
+  }
+
+  Widget _agendaDuJour() {
+    final theme = Theme.of(context);
+    final entrees = _entreesDuJour();
+
+    if (!_anneeConfiguree) {
+      return _Bandeau(
+        message: 'Aucune année académique configurée. Commencez par en créer '
+            'une.',
+        action: 'Configurer',
+        onPressed: () => _ouvrir(const AnneeCouranteScreen()),
+      );
+    }
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Planning du ${_jourSelectionne.day}/'
+                    '${_jourSelectionne.month}/${_jourSelectionne.year}',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: () => _planifier(_jourSelectionne),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Planifier'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (entrees.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'Rien de planifié ce jour-là.',
+                  style: theme.textTheme.bodySmall,
+                ),
+              )
+            else
+              ...entrees.map(
+                (entree) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    children: [
+                      Icon(entree.icone, size: 18, color: entree.couleur),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          entree.titre,
+                          style: theme.textTheme.bodyMedium,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (entree.sousTitre.isNotEmpty)
+                        Text(
+                          entree.sousTitre,
+                          style: theme.textTheme.bodySmall,
+                          textAlign: TextAlign.right,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _grille(List<Widget> cartes) {
     return LayoutBuilder(
       builder: (context, contraintes) {
         final colonnes = contraintes.maxWidth > 600 ? 4 : 2;
-        return GridView.count(
-          crossAxisCount: colonnes,
+
+        // Hauteur fixe plutot qu'un ratio : la carte contient deux textes de
+        // une a deux lignes, un ratio calculé sur la largeur deborde des que la
+        // fenetre devient etroite.
+        return GridView(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           padding: const EdgeInsets.all(12),
-          childAspectRatio: colonnes == 2 ? 1.15 : 1.4,
-          mainAxisSpacing: 12,
-          crossAxisSpacing: 12,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: colonnes,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            mainAxisExtent: 132,
+          ),
           children: cartes,
         );
       },
     );
   }
+}
+
+/// Une entree d'agenda : composition, journee de revision ou evenement.
+class _Entree {
+  final String titre;
+  final String sousTitre;
+  final IconData icone;
+  final Color couleur;
+
+  const _Entree({
+    required this.titre,
+    required this.sousTitre,
+    required this.icone,
+    required this.couleur,
+  });
 }
 
 class _Carte extends StatelessWidget {
@@ -311,19 +562,33 @@ class _Carte extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(icone, color: theme.colorScheme.primary),
-              const Spacer(),
-              Text(
-                titre,
-                style: theme.textTheme.titleMedium,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                sousTitre,
-                style: theme.textTheme.bodySmall,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+              const SizedBox(height: 8),
+              // Les textes se reduisent plutot que de deborder quand la carte
+              // est courte.
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        titre,
+                        style: theme.textTheme.titleMedium,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Flexible(
+                      child: Text(
+                        sousTitre,
+                        style: theme.textTheme.bodySmall,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),

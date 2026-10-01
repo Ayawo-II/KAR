@@ -99,7 +99,13 @@ class _AccueilState extends State<_Accueil> {
     if (!mounted) return;
 
     AppStateScope.read(context).marquerConfigure();
-    setState(() => _configurationTerminee = true);
+    setState(() {
+      _configurationTerminee = true;
+
+      // Le code vient d'etre defini : le redemander dans la foullee serait
+      // absurde.
+      _verrouille = false;
+    });
   }
 
   /// Oubli du code : seule issue possible, efface preferences et base.
