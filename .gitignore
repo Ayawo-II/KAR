@@ -15,6 +15,14 @@ build/
 **/doc/api/
 **/ios/Flutter/.last_build_id
 
+# Gradle / Kotlin
+.kotlin/
+.gradle/
+local.properties
+android/app/debug
+android/app/profile
+android/app/release
+
 # OS
 .DS_Store
 Thumbs.db
