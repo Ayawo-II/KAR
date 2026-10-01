@@ -1,340 +1,433 @@
 import 'package:flutter/material.dart';
-import 'package:kar/screens/authentification.dart';
-import 'package:kar/screens/compo.dart';
-import 'package:kar/screens/create_account.dart';
-import 'package:kar/screens/annee_courante.dart';
-import 'package:kar/services/auth_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:table_calendar/table_calendar.dart';
 
 import '../data/database_helper.dart';
 import '../models/matiere.dart';
+import '../state/app_state.dart';
+import '../theme.dart';
+import 'compositions_screen.dart';
+import 'notes_screen.dart';
+import 'evenements_screen.dart';
+import 'programme_revision_screen.dart';
+import 'reglages_screen.dart';
+import 'annee_courante_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  final VoidCallback toggleTheme; 
-  final bool isDarkMode;
+  final VoidCallback onDeconnexion;
 
-  const HomeScreen({required this.toggleTheme, required this.isDarkMode, super.key});
-
-
+  const HomeScreen({required this.onDeconnexion, super.key});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  DateTime _jourFocus = DateTime.now();
+  DateTime _jourSelectionne = DateTime.now();
 
-  void plannifier(BuildContext context, DateTime jour, Matiere matiere) async{
-    showDialog(
-        context: context,
-        builder: (BuildContext context){
-          return AlertDialog(
-            title: Text("Type de composition"),
-
-            content: SizedBox(
-              width: double.maxFinite,
-              height: 100,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  OutlinedButton(
-                      onPressed: (){
-                        DatabaseHelper.instance.planifierDevoir(
-                          matiere,
-                          "devoir",
-                          jour
-                        ).then((_) {
-                          Navigator.of(context).pop(); // Ferme la boîte
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text("✅ Devoir planifié pour ${matiere.libMatiere}"),
-                            ),
-                          );
-                        });
-                      },
-                      child: Text("Devoir")
-                  ),
-
-                  OutlinedButton(
-                      onPressed: (){
-
-                      },
-                      child: Text("Devoir")
-                  )
-                ],
-              ),
-            ),
-          );
-
-        }
-    );
-  }
-
-  void lesMatieres(BuildContext context, DateTime date) async {
-    try {
-      final matieres = await DatabaseHelper.instance.recupererMatieres();
-
-      showDialog(
-        context: context,
-        builder: (BuildContext context) {
-          return AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.school, color: Colors.blue),
-                SizedBox(width: 8),
-                Text("Toutes mes matières"),
-              ],
-            ),
-            content: SizedBox(
-              width: double.maxFinite,
-              height: 300,
-              child: matieres.isEmpty
-                  ? const Center(child: Text("Aucune matière disponible"))
-                  : ListView.builder(
-                itemCount: matieres.length,
-                itemBuilder: (context, index) {
-                  final matiere = matieres[index];
-                  return Card(
-                    margin: const EdgeInsets.symmetric(vertical: 4),
-                    child: ListTile(
-                      onTap: (){
-                        plannifier(context, date, matiere);
-                      },
-                      leading: CircleAvatar(
-                        backgroundColor: Colors.blue,
-                        child: Text(
-                          matiere.coef.toString(),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                      title: Text(
-                        matiere.libMatiere,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      subtitle: Text(
-                        'Crédits: ${matiere.credit} • Semestre: ${matiere.semestre}',
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text("Fermer"),
-              ),
-            ],
-          );
-        },
-      );
-    } catch (e) {
-      print("❌ Erreur: $e");
-    }
-  }
-
-  String? nom;
-  String? prenoms;
-  String? sexe;
-  String? dateNaissance;
-
-  DateTime focusedDay = DateTime.now();
-  DateTime selectedDay = DateTime.now();
+  bool _anneeConfiguree = true;
+  bool _verificationAnnee = true;
 
   @override
   void initState() {
     super.initState();
-    _loadUser();
+    _verifierAnnee();
   }
 
-  Future<void> _loadUser() async {
-    final prefs = await SharedPreferences.getInstance();
+  Future<void> _verifierAnnee() async {
+    final annee = await DatabaseHelper.instance.recupererAnneeCourante();
+    if (!mounted) return;
+
     setState(() {
-      nom = prefs.getString('nom');
-      prenoms = prefs.getString('prenoms');
-      sexe = prefs.getString('sexe');
-      dateNaissance = prefs.getString('dateNaissance');
+      _anneeConfiguree = annee != null;
+      _verificationAnnee = false;
     });
   }
 
-  void infosUtilisateur(BuildContext context){
-    showDialog(
-        context: context,
-        builder: (BuildContext context){
-          return AlertDialog(
-            title: Text("Vos informations"),
-            content: SingleChildScrollView(
-              child: ListBody(
-                children: [
-                  Text("Nom : $nom"),
-                  Text("Prénoms : $prenoms"),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                  onPressed: (){
-                    Navigator.of(context).pop();
-                  },
-                  child: Text("Fermer")
-              )
-            ],
-          );
-        }
+  void _message(String texte) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(texte)));
+  }
+
+  Future<void> _planifier(DateTime jour) async {
+    final matieres = await DatabaseHelper.instance.recupererMatieres();
+
+    if (!mounted) return;
+
+    if (matieres.isEmpty) {
+      _message('Aucune matière enregistrée pour cette année.');
+      return;
+    }
+
+    final matiere = await showDialog<Matiere>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Pour quelle matière ?'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 320,
+          child: ListView.builder(
+            itemCount: matieres.length,
+            itemBuilder: (context, index) {
+              final item = matieres[index];
+              return ListTile(
+                leading: CircleAvatar(child: Text('${item.coef}')),
+                title: Text(item.libMatiere),
+                subtitle: Text(
+                  'Semestre ${item.semestre} • ${item.credit} crédit'
+                  '${item.credit > 1 ? 's' : ''}',
+                ),
+                onTap: () => Navigator.of(dialogContext).pop(item),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Annuler'),
+          ),
+        ],
+      ),
     );
+
+    if (matiere == null || !mounted) return;
+
+    final type = await _demanderType();
+    if (type == null || !mounted) return;
+
+    try {
+      await DatabaseHelper.instance.planifierComposition(
+        matiere: matiere,
+        type: type,
+        date: jour,
+      );
+    } catch (erreur) {
+      if (!mounted) return;
+      _message('Enregistrement impossible : $erreur');
+      return;
+    }
+
+    if (!mounted) return;
+    _message('${type == 'devoir' ? 'Devoir' : 'Examen'} planifié le '
+        '${jour.day}/${jour.month}/${jour.year}');
+  }
+
+  Future<String?> _demanderType() {
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('Type de composition'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(dialogContext).pop('devoir'),
+            child: const ListTile(
+              leading: Icon(Icons.assignment_outlined),
+              title: Text('Devoir'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(dialogContext).pop('examen'),
+            child: const ListTile(
+              leading: Icon(Icons.assignment_turned_in_outlined),
+              title: Text('Examen'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmerDeconnexion() async {
+    final confirme = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Verrouiller'),
+        content: const Text('Le code vous sera demandé à la réouverture.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Verrouiller'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirme == true) widget.onDeconnexion();
+  }
+
+  Future<void> _ouvrir(Widget ecran) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => ecran),
+    );
+
+    if (!mounted) return;
+    await _verifierAnnee();
   }
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    return SafeArea(
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text("KAR"),
-        ),
-        drawer: Drawer(
-          child: ListView(
-            padding: EdgeInsets.zero,
-            children: [
-              DrawerHeader(
-                child: Column(
-                  children: [
-                    Text("$nom $prenoms"),
-                    CircleAvatar(
-                      radius: screenWidth * 0.12,
-                      child: Text(
-                          "${nom != null && nom!.isNotEmpty ? nom![0].toUpperCase() : ''}${prenoms != null && prenoms!.isNotEmpty ? prenoms![0].toUpperCase() : ''}",
-                        style: TextStyle(
-                          fontSize: screenWidth*0.08,
-                        ),
-                      ),
-                      backgroundColor: Colors.cyanAccent,
+    final appState = AppStateScope.of(context);
+    final profil = appState.profil;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('KAR'),
+        actions: [
+          IconButton(
+            tooltip: appState.nomMenuBasculeTheme,
+            icon: Icon(
+              appState.themeSombre ? Icons.light_mode : Icons.dark_mode,
+            ),
+            onPressed: appState.basculerTheme,
+          ),
+        ],
+      ),
+      drawer: _Tiroir(
+        nomComplet: profil.nomComplet,
+        initiales: profil.initiales,
+        libelleTheme: appState.nomMenuBasculeTheme,
+        onProfilTap: () => _ouvrir(const ReglagesScreen()),
+        onThemeTap: appState.basculerTheme,
+        onDeconnexion: _confirmerDeconnexion,
+      ),
+      body: SafeArea(
+        child: _verificationAnnee
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
+                children: [
+                  TableCalendar<void>(
+                    locale: 'fr_FR',
+                    firstDay: DateTime.utc(2000),
+                    lastDay: DateTime.utc(2100, 12, 31),
+                    focusedDay: _jourFocus,
+                    selectedDayPredicate: (jour) =>
+                        isSameDay(_jourSelectionne, jour),
+                    onDaySelected: (jourSelectionne, jourFocus) {
+                      setState(() {
+                        _jourSelectionne = jourSelectionne;
+                        _jourFocus = jourFocus;
+                      });
+                    },
+                  ),
+                  if (!_anneeConfiguree)
+                    _Bandeau(
+                      message:
+                          'Aucune année académique configurée. Commencez par en '
+                          'créer une.',
+                      action: 'Configurer',
+                      onPressed: () => _ouvrir(const AnneeCouranteScreen()),
                     )
-                  ],
-                ),
+                  else
+                    _Bandeau(
+                      message:
+                          'Planning du ${_jourSelectionne.day}/'
+                          '${_jourSelectionne.month}/${_jourSelectionne.year}',
+                      action: 'Planifier',
+                      onPressed: () => _planifier(_jourSelectionne),
+                    ),
+                  _grille(
+                    [
+                      _Carte(
+                        titre: 'Compositions',
+                        sousTitre: 'Devoirs et examens à venir.',
+                        icone: Icons.assignment_outlined,
+                        onTap: () => _ouvrir(const CompositionsScreen()),
+                      ),
+                      _Carte(
+                        titre: 'Programme de révision',
+                        sousTitre: 'Planifiez vos révisions.',
+                        icone: Icons.calendar_month_outlined,
+                        onTap: () =>
+                            _ouvrir(const ProgrammeRevisionScreen()),
+                      ),
+                      _Carte(
+                        titre: 'Notes',
+                        sousTitre: 'Saisissez et suivez vos moyennes.',
+                        icone: Icons.grading_outlined,
+                        onTap: () => _ouvrir(const NotesScreen()),
+                      ),
+                      _Carte(
+                        titre: 'Événements',
+                        sousTitre: 'Votre agenda personnel.',
+                        icone: Icons.event_outlined,
+                        onTap: () => _ouvrir(const EvenementsScreen()),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              ListTile(
-                title: Text("Profil"),
-                onTap: () {
-                  infosUtilisateur(context);
-                },
+      ),
+    );
+  }
+
+  Widget _grille(List<Widget> cartes) {
+    return LayoutBuilder(
+      builder: (context, contraintes) {
+        final colonnes = contraintes.maxWidth > 600 ? 4 : 2;
+        return GridView.count(
+          crossAxisCount: colonnes,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(12),
+          childAspectRatio: colonnes == 2 ? 1.15 : 1.4,
+          mainAxisSpacing: 12,
+          crossAxisSpacing: 12,
+          children: cartes,
+        );
+      },
+    );
+  }
+}
+
+class _Carte extends StatelessWidget {
+  final String titre;
+  final String sousTitre;
+  final IconData icone;
+  final VoidCallback onTap;
+
+  const _Carte({
+    required this.titre,
+    required this.sousTitre,
+    required this.icone,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icone, color: theme.colorScheme.primary),
+              const Spacer(),
+              Text(
+                titre,
+                style: theme.textTheme.titleMedium,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
-              ListTile(
-                title: Text("Année courante"),
-                onTap: () {
-                  Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => AnneeCourante())
-                  );
-                },
-              ),
-              ListTile(
-                title: Text(widget.isDarkMode ? "Thème clair" : "Thème sombre"),
-                onTap: widget.toggleTheme,
+              const SizedBox(height: 4),
+              Text(
+                sousTitre,
+                style: theme.textTheme.bodySmall,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
             ],
           ),
         ),
-        body: ListView(
-          children: [
-            TableCalendar(
-              locale: 'fr_FR',
-              focusedDay: focusedDay,
-              firstDay: DateTime.utc(2000, 1, 1),
-              lastDay: DateTime.utc(2100, 12, 31),
-              selectedDayPredicate: (day) => isSameDay(selectedDay, day),
-              onDaySelected: (selectedDay, focusedDay) {
-                setState(() {
-                  this.selectedDay = selectedDay;
-                  this.focusedDay = focusedDay;
-                });
-              },
-            ),
+      ),
+    );
+  }
+}
 
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  Container(
-                    width: screenWidth * 0.48,
-                    height: screenHeight * 0.20,
-                    child: Card(
-                      margin: const EdgeInsets.all(10.0),
-                      elevation: 10,
-                      child: ListTile(
-                        title: Text('Programme de révision'),
-                        subtitle: Text("Ajoutez et gérez votre emploi du temps personnel."),
-                        onTap: () {
-                          print("Carte 1 cliquée !");
-                        },
-                      ),
-                    ),
-                  ),
-                  Container(
-                    width: screenWidth * 0.48,
-                    height: screenHeight * 0.20,
-                    child: Card(
-                      margin: const EdgeInsets.all(10.0),
-                      elevation: 10,
-                      child: ListTile(
-                        title: Text('Devoirs et examens'),
-                        subtitle: Text("Consultez vos échéances de devoirs et examens pour rester organisé."),
-                        onTap: () {
-                          lesMatieres(context, selectedDay);
-                        },
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  Container(
-                    width: screenWidth * 0.48,
-                    height: screenHeight * 0.20,
-                    child: Card(
-                      margin: const EdgeInsets.all(10.0),
-                      elevation: 10,
-                      child: ListTile(
-                        title: Text('Notes'),
-                        subtitle: Text("Enregistrez vos notes et suivre vos performances."),
-                        onTap: () {
+class _Bandeau extends StatelessWidget {
+  final String message;
+  final String action;
+  final VoidCallback onPressed;
 
-                        },
-                      ),
-                    ),
-                  ),
-                  Container(
-                    width: screenWidth * 0.48,
-                    height: screenHeight * 0.20,
-                    child: Card(
-                      margin: const EdgeInsets.all(10.0),
-                      elevation: 10,
-                      child: ListTile(
-                        title: Text('Evénements'),
-                        subtitle: Text("Découvrez les activités à venir."),
-                        onTap: () {
-                          print("Carte 4 cliquée !");
-                        },
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+  const _Bandeau({
+    required this.message,
+    required this.action,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: ListTile(
+        leading: const Icon(Icons.info_outline),
+        title: Text(message),
+        trailing: FilledButton.tonal(
+          onPressed: onPressed,
+          child: Text(action),
         ),
+      ),
+    );
+  }
+}
 
+class _Tiroir extends StatelessWidget {
+  final String nomComplet;
+  final String initiales;
+  final String libelleTheme;
+  final VoidCallback onProfilTap;
+  final VoidCallback onThemeTap;
+  final VoidCallback onDeconnexion;
+
+  const _Tiroir({
+    required this.nomComplet,
+    required this.initiales,
+    required this.libelleTheme,
+    required this.onProfilTap,
+    required this.onThemeTap,
+    required this.onDeconnexion,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Drawer(
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          DrawerHeader(
+            decoration: BoxDecoration(color: theme.colorScheme.primaryContainer),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircleAvatar(
+                  radius: 36,
+                  backgroundColor: AppTheme.secondaire,
+                  child: Text(
+                    initiales,
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  nomComplet,
+                  style: theme.textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings_outlined),
+            title: const Text('Profil et réglages'),
+            onTap: onProfilTap,
+          ),
+          ListTile(
+            leading: const Icon(Icons.brightness_6_outlined),
+            title: Text(libelleTheme),
+            onTap: onThemeTap,
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.lock_outline),
+            title: const Text('Verrouiller'),
+            onTap: onDeconnexion,
+          ),
+        ],
       ),
     );
   }

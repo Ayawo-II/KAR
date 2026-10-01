@@ -1,3 +1,15 @@
+/// Le type de composition, stocke tel quel dans la colonne `type`.
+abstract final class TypeComposition {
+  static const String devoir = 'devoir';
+  static const String examen = 'examen';
+
+  static const List<String> tous = [devoir, examen];
+
+  /// Libelle affiche a l'utilisateur.
+  static String libelle(String type) =>
+      type == examen ? 'Examen' : 'Devoir';
+}
+
 class Composition {
   final int? id;
   final String type;
@@ -11,9 +23,10 @@ class Composition {
     required this.matiereId,
   });
 
+  /// Clefs d'insertion. `id` est volontairement absent : il est attribue par
+  /// SQLite.
   Map<String, dynamic> toMap() {
     return {
-      'id': id,
       'type': type,
       'dateCompo': date.toIso8601String(),
       'matiereId': matiereId,
@@ -22,12 +35,10 @@ class Composition {
 
   factory Composition.fromMap(Map<String, dynamic> map) {
     return Composition(
-      id: map['id'],
-      type: map['type'],
-      date: DateTime.parse(map['date']),
-      matiereId: map['matiereId'],
+      id: map['id'] as int?,
+      type: map['type'] as String,
+      date: DateTime.parse(map['dateCompo'] as String),
+      matiereId: map['matiereId'] as int,
     );
   }
-
-  DateTime get dateTime => DateTime.fromMillisecondsSinceEpoch(date as int);
 }

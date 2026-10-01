@@ -1,22 +1,27 @@
 import 'package:flutter/material.dart';
-import 'package:kar/models/annee_courante.dart';
-import 'package:kar/models/matiere.dart';
+import 'package:flutter/services.dart';
 
 import '../data/database_helper.dart';
+import '../models/annee_courante.dart';
+import '../models/matiere.dart';
 
+/// Saisie des matieres d'une annee, semestre par semestre.
+///
+/// Les coefficients et credits sont des valeurs libres : seules la positivite
+/// et la presence sont verifiees. L'ancien menu deroulant limite a 15 a ete
+/// remplace par une saisie directe.
 class SaveMatiere extends StatefulWidget {
-  final TextEditingController anneeDebut;
-  final TextEditingController anneeFin;
-  final TextEditingController ecole;
-  final TextEditingController classe;
-  final TextEditingController filiere;
-  final TextEditingController valDevoirs;
-  final TextEditingController valExam;
-  final TextEditingController semestre1;
-  final TextEditingController semestre2;
+  final int anneeDebut;
+  final int anneeFin;
+  final String ecole;
+  final String classe;
+  final String filiere;
+  final String valDevoirs;
+  final String valExam;
+  final int nombreSemestre1;
+  final int nombreSemestre2;
 
   const SaveMatiere({
-    Key? key,
     required this.anneeDebut,
     required this.anneeFin,
     required this.ecole,
@@ -24,66 +29,133 @@ class SaveMatiere extends StatefulWidget {
     required this.filiere,
     required this.valDevoirs,
     required this.valExam,
-    required this.semestre1,
-    required this.semestre2,
-  }) : super(key: key);
+    required this.nombreSemestre1,
+    required this.nombreSemestre2,
+    super.key,
+  });
 
   @override
   State<SaveMatiere> createState() => _SaveMatiereState();
 }
 
 class _SaveMatiereState extends State<SaveMatiere> {
-  final List<TextEditingController> matieresSem1 = [];
-  final List<TextEditingController> matieresSem2 = [];
-  final List<int?> coefsSem1 = [];
-  final List<int?> creditsSem1 = [];
-  final List<int?> coefsSem2 = [];
-  final List<int?> creditsSem2 = [];
+  final _form = GlobalKey<FormState>();
+
+  final List<_LigneMatiere> _semestre1 = [];
+  final List<_LigneMatiere> _semestre2 = [];
+
+  bool _enregistrement = false;
 
   @override
   void initState() {
     super.initState();
-
-    int countSem1 = int.tryParse(widget.semestre1.text) ?? 0;
-    int countSem2 = int.tryParse(widget.semestre2.text) ?? 0;
-
-    for (int i = 0; i < countSem1; i++) {
-      matieresSem1.add(TextEditingController());
-      coefsSem1.add(null);
-      creditsSem1.add(null);
+    for (var i = 0; i < widget.nombreSemestre1; i++) {
+      _semestre1.add(_LigneMatiere());
     }
-    for (int i = 0; i < countSem2; i++) {
-      matieresSem2.add(TextEditingController());
-      coefsSem2.add(null);
-      creditsSem2.add(null);
+    for (var i = 0; i < widget.nombreSemestre2; i++) {
+      _semestre2.add(_LigneMatiere());
     }
   }
 
   @override
   void dispose() {
-    for (var c in matieresSem1) c.dispose();
-    for (var c in matieresSem2) c.dispose();
+    for (final ligne in [..._semestre1, ..._semestre2]) {
+      ligne.dispose();
+    }
     super.dispose();
+  }
+
+  Future<void> _enregistrer() async {
+    if (_enregistrement) return;
+    if (!(_form.currentState?.validate() ?? false)) return;
+
+    setState(() => _enregistrement = true);
+
+    final annee = AnneeCourante(
+      anneeDebut: widget.anneeDebut,
+      anneeFin: widget.anneeFin,
+      ecole: widget.ecole,
+      classe: widget.classe,
+      filiere: widget.filiere,
+      valDevoirs: widget.valDevoirs,
+      valExam: widget.valExam,
+      statutAnnee: AnneeCourante.enCours,
+    );
+
+    final matieres = <Matiere>[
+      ..._semestre1.map((ligne) => ligne.versMatiere(1)),
+      ..._semestre2.map((ligne) => ligne.versMatiere(2)),
+    ];
+
+    try {
+      await DatabaseHelper.instance.ajouterAnneeEtMatieres(annee, matieres);
+    } on StateError catch (erreur) {
+      if (!mounted) return;
+      setState(() => _enregistrement = false);
+      _message(erreur.message);
+      return;
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() => _enregistrement = false);
+      _message('Enregistrement impossible : $erreur');
+      return;
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
+
+  void _message(String texte) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(texte)));
   }
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-
-    return SafeArea(
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text("Matières"),
-        ),
-        body: SingleChildScrollView(
-          child: Column(
+    return Scaffold(
+      appBar: AppBar(title: const Text('Matières')),
+      body: SafeArea(
+        child: Form(
+          key: _form,
+          child: ListView(
+            padding: const EdgeInsets.all(12),
             children: [
-              _buildTable("1er semestre", matieresSem1, coefsSem1, creditsSem1),
-              _buildTable("2e semestre", matieresSem2, coefsSem2, creditsSem2),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: _saveData,
-                child: const Text("Enregistrer les matières"),
+              Text(
+                'Année ${widget.anneeDebut}-${widget.anneeFin} • '
+                '${widget.classe}',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              if (_semestre1.isNotEmpty) ...[
+                _titre('1er semestre'),
+                ..._semestre1.map(_champMatiere),
+                const SizedBox(height: 16),
+              ],
+              if (_semestre2.isNotEmpty) ...[
+                _titre('2e semestre'),
+                ..._semestre2.map(_champMatiere),
+                const SizedBox(height: 16),
+              ],
+              if (_semestre1.isEmpty && _semestre2.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 32),
+                  child: Text(
+                    'Aucune matière à saisir : le nombre de matières était '
+                    'nul.',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              FilledButton.icon(
+                onPressed: _enregistrement ? null : _enregistrer,
+                icon: _enregistrement
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save_outlined),
+                label: const Text('Enregistrer les matières'),
               ),
             ],
           ),
@@ -92,102 +164,90 @@ class _SaveMatiereState extends State<SaveMatiere> {
     );
   }
 
-  Widget _buildTable(
-      String title,
-      List<TextEditingController> matieres,
-      List<int?> coefs,
-      List<int?> credits,
-      ) {
-    return Table(
-      border: TableBorder.all(),
-      columnWidths: const {
-        0: FlexColumnWidth(3),
-        1: FlexColumnWidth(0.7),
-        2: FlexColumnWidth(0.7),
-      },
-      children: [
-        TableRow(children: [
-          Center(child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold))),
-          const Center(child: Text("Coef")),
-          const Center(child: Text("Crédit")),
-        ]),
-        for (int i = 0; i < matieres.length; i++)
-          TableRow(children: [
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: TextField(
-                controller: matieres[i],
-                decoration: InputDecoration(
-                  border: InputBorder.none,
-                ),
-              ),
-            ),
-            DropdownButtonFormField<int>(
-              decoration: InputDecoration(
-                border: InputBorder.none,
-              ),
-              value: coefs[i],
-              items: List.generate(15, (index) {
-                int value = index + 1;
-                return DropdownMenuItem(value: value, child: Text(value.toString()));
-              }),
-              onChanged: (v) => setState(() => coefs[i] = v),
-            ),
-            DropdownButtonFormField<int>(
-              decoration: InputDecoration(
-                border: InputBorder.none,
-              ),
-              value: credits[i],
-              items: List.generate(15, (index) {
-                int value = index + 1;
-                return DropdownMenuItem(value: value, child: Text(value.toString()));
-              }),
-              onChanged: (v) => setState(() => credits[i] = v),
-            ),
-          ]),
-      ],
+  Widget _titre(String texte) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(texte, style: Theme.of(context).textTheme.titleMedium),
     );
   }
 
-  Future<void> _saveData() async {
-    final annee = AnneeCourante(
-      anneeDebut: int.tryParse(widget.anneeDebut.text) ?? 0,
-      anneeFin: int.tryParse(widget.anneeFin.text) ?? 0,
-      ecole: widget.ecole.text,
-      classe: widget.classe.text,
-      filiere: widget.filiere.text,
-      valDevoirs: widget.valDevoirs.text,
-      valExam: widget.valExam.text,
-      statutAnnee: "en cours",
+  Widget _champMatiere(_LigneMatiere ligne) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            TextFormField(
+              controller: ligne.libelle,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(labelText: 'Matière'),
+              validator: (valeur) =>
+                  (valeur == null || valeur.trim().isEmpty)
+                      ? 'Intitulé obligatoire'
+                      : null,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: ligne.coef,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                    decoration: const InputDecoration(labelText: 'Coefficient'),
+                    validator: _nombrePositif,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    controller: ligne.credit,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                    decoration: const InputDecoration(labelText: 'Crédit'),
+                    validator: _nombrePositif,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
+  }
 
-    List<Matiere> toutesMatieres = [];
+  String? _nombrePositif(String? valeur) {
+    final nombre = int.tryParse(valeur ?? '');
+    if (nombre == null) return 'Nombre attendu';
+    if (nombre <= 0) return 'Valeur positive';
+    return null;
+  }
+}
 
-    for (int i = 0; i < matieresSem1.length; i++) {
-      toutesMatieres.add(Matiere(
-        libMatiere: matieresSem1[i].text,
-        coef: coefsSem1[i] ?? 0,
-        credit: creditsSem1[i] ?? 0,
-        semestre: 1,
-        anneeId: 0,
-      ));
-    }
+/// Controleurs d'une matiere : intitule, coefficient, credit.
+class _LigneMatiere {
+  final TextEditingController libelle = TextEditingController();
+  final TextEditingController coef = TextEditingController(text: '1');
+  final TextEditingController credit = TextEditingController(text: '1');
 
-    for (int i = 0; i < matieresSem2.length; i++) {
-      toutesMatieres.add(Matiere(
-        libMatiere: matieresSem2[i].text,
-        coef: coefsSem2[i] ?? 0,
-        credit: creditsSem2[i] ?? 0,
-        semestre: 2,
-        anneeId: 0,
-      ));
-    }
-
-    // Pour test :
-    await DatabaseHelper.instance.ajouterAnneeEtMatieres(annee, toutesMatieres);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Matières enregistrées avec succès ✅")),
+  Matiere versMatiere(int semestre) {
+    return Matiere(
+      libMatiere: libelle.text.trim(),
+      coef: int.parse(coef.text),
+      credit: int.parse(credit.text),
+      semestre: semestre,
+      anneeId: 0,
     );
+  }
+
+  void dispose() {
+    libelle.dispose();
+    coef.dispose();
+    credit.dispose();
   }
 }

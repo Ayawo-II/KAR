@@ -4,6 +4,9 @@ class Matiere {
   final int coef;
   final int credit;
   final int semestre;
+
+  /// Renseignee apres insertion de l'annee. Volontairement mutable : la valeur
+  /// n'est connue qu'une fois l'affectation faite par la base.
   int anneeId;
 
   Matiere({
@@ -15,9 +18,10 @@ class Matiere {
     required this.anneeId,
   });
 
+  /// Clefs d'insertion. `id` est volontairement absent : il est attribue par
+  /// SQLite.
   Map<String, dynamic> toMap() {
     return {
-      'id': id,
       'libMatiere': libMatiere,
       'coef': coef,
       'credit': credit,
@@ -28,12 +32,12 @@ class Matiere {
 
   factory Matiere.fromMap(Map<String, dynamic> map) {
     return Matiere(
-      id: map['id'],
-      libMatiere: map['libMatiere'],
-      coef: map['coef'],
-      credit: map['credit'],
-      semestre: map['semestre'],
-      anneeId: map['anneeId'],
+      id: map['id'] as int?,
+      libMatiere: map['libMatiere'] as String,
+      coef: map['coef'] as int,
+      credit: map['credit'] as int,
+      semestre: map['semestre'] as int,
+      anneeId: map['anneeId'] as int,
     );
   }
 }
