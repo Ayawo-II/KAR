@@ -1,22 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../services/pin_service.dart';
+import '../services/securite_service.dart';
 
 /// Etat global de l'application.
 ///
 /// Volontairement minimal : l'application est mono-utilisateur, il n'y a donc
 /// pas de session a partager ni de cache de donnees a distribuer. Seul le choix
-/// de theme, le profil local et le service PIN sont necessaires a l'echelle de
-/// l'application.
+/// de theme, le profil local et l'etat du verrouillage sont necessaires a
+/// l'echelle de l'application.
 class AppState extends ChangeNotifier {
   static const String _cleThemeSombre = 'theme_sombre';
+  static const String _cleConfigure = 'config_terminee';
 
   final Profil _profil = Profil();
 
-  /// Service de verrouillage, partage pour que les reglages puissent changer
-  /// le code sans recreer une instance.
-  final PinService pinService = PinService();
+  /// Protection de l'application, partage pour que les reglages puissent
+  /// activer le verrouillage sans recreer une instance.
+  final SecuriteService securiteService = SecuriteService();
 
   bool _themeSombre = false;
 
@@ -29,23 +30,60 @@ class AppState extends ChangeNotifier {
   String get nomMenuBasculeTheme =>
       _themeSombre ? 'Thème clair' : 'Thème sombre';
 
-  /// Vrai tant qu'aucun code PIN n'a ete defini.
+  /// Vrai tant que la premiere ouverture n'est pas terminee.
   bool get aConfigurer => _aConfigurer;
   bool _aConfigurer = true;
+
+  /// Vrai si l'utilisateur a demande un verrouillage a l'ouverture.
+  ///
+  /// Faux par defaut : sans code a taper, l'application s'ouvre directement.
+  bool get verrouillageActif => _verrouillageActif;
+  bool _verrouillageActif = false;
+
+  /// Vrai si l'appareil sait authentifier l'utilisateur (empreinte, visage,
+  /// code). Le code de l'application sert alors de secours.
+  bool get appareilSecurise => _appareilSecurise;
+  bool _appareilSecurise = false;
 
   /// Lit les preferences. A appeler une fois au demarrage, avant `runApp`.
   Future<void> initialiser() async {
     final prefs = await SharedPreferences.getInstance();
     _themeSombre = prefs.getBool(_cleThemeSombre) ?? false;
-    _aConfigurer = !await pinService.estConfigure();
+
+    // Les installations anterieures n'ont pas ce drapeau : leur configuration
+    // s'achevait par la definition d'un code PIN, qui prouve qu'elle a ete
+    // menee a son terme.
+    final configurationLegacy = await securiteService.pinSecoursDefini();
+    _aConfigurer = !(prefs.getBool(_cleConfigure) ?? configurationLegacy);
+
+    _verrouillageActif = await securiteService.estActif();
+    _appareilSecurise = await securiteService.appareilSecurise();
+
     await _profil.charger();
     notifyListeners();
   }
 
   /// Marque la configuration initiale comme terminee.
-  void marquerConfigure() {
+  Future<void> marquerConfigure() async {
     _aConfigurer = false;
     notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_cleConfigure, true);
+  }
+
+  Future<void> activerVerrouillage() async {
+    _verrouillageActif = true;
+    notifyListeners();
+
+    await securiteService.activer();
+  }
+
+  Future<void> desactiverVerrouillage() async {
+    _verrouillageActif = false;
+    notifyListeners();
+
+    await securiteService.desactiver();
   }
 
   Future<void> basculerTheme() async {
@@ -55,9 +93,6 @@ class AppState extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_cleThemeSombre, _themeSombre);
   }
-
-  /// Vide le profil. Utilise par la deconnexion.
-  void viderProfil() => _profil.vider();
 }
 
 /// Profil local de l'utilisateur.
@@ -106,11 +141,6 @@ class Profil {
     await prefs.setString(_cleNom, _nom);
     await prefs.setString(_clePrenoms, _prenoms);
   }
-
-  void vider() {
-    _nom = '';
-    _prenoms = '';
-  }
 }
 
 /// Rend [AppState] accessible a la descendance.
@@ -124,8 +154,7 @@ class AppStateScope extends InheritedNotifier<AppState> {
   /// L'etat de l'application, avec dependance : l'element se reconstruit a
   /// chaque notification.
   static AppState of(BuildContext context) {
-    final scope =
-        context.dependOnInheritedWidgetOfExactType<AppStateScope>();
+    final scope = context.dependOnInheritedWidgetOfExactType<AppStateScope>();
     assert(scope != null, 'AppStateScope est absent de l arborescence.');
     return scope!.notifier!;
   }

@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'data/database_helper.dart';
 import 'screens/configuration_screen.dart';
+import 'screens/deverrouillage_screen.dart';
 import 'screens/home_screen.dart';
-import 'screens/verrouillage_screen.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
 
@@ -20,7 +19,7 @@ Future<void> main() async {
   await appState.initialiser();
 
   // La base n'est ouverte qu'a l'ouverture effective : elle ne doit pas etre
-  // creee avant que le code PIN soit defini.
+  // creee avant que la premiere configuration soit terminee.
   if (!appState.aConfigurer) await DatabaseHelper.instance.database;
 
   runApp(AppStateScope(state: appState, child: const KarApp()));
@@ -68,84 +67,57 @@ class _AccueilState extends State<_Accueil> {
     super.didChangeDependencies();
     if (_configurationTerminee) return;
 
+    final appState = AppStateScope.of(context);
+
     // La configuration initiale n'est proposee qu'une fois : le flag reste a
-    // faux tant que l'utilisateur ne l'a pas terminee.
-    _configurationTerminee = !AppStateScope.of(context).aConfigurer;
+    // faux tant que l'utilisateur ne l'a pas terminee. Le verrouillage, lui,
+    // ne s'affiche que s'il a ete active.
+    _configurationTerminee = !appState.aConfigurer;
+    _verrouille = appState.verrouillageActif;
   }
 
   @override
   Widget build(BuildContext context) {
     if (!_configurationTerminee) {
-      return ConfigurationScreen(
-        onTermine: _ouvrirBase,
-      );
+      return ConfigurationScreen(onTermine: _ouvrirBase);
     }
 
     if (_verrouille) {
-      return VerrouillageScreen(
+      return DeverrouillageScreen(
         onDebloque: () => setState(() => _verrouille = false),
-        onCodeOublie: _toutEffacer,
+        onVerrouillageDesactive: _desactiverVerrouillage,
       );
     }
 
-    return HomeScreen(
-      onDeconnexion: () => setState(() => _verrouille = true),
-    );
+    return HomeScreen(onVerrouiller: () => setState(() => _verrouille = true));
   }
 
-  /// La base n'est creee qu'apres la saisie du premier code PIN.
+  /// La base n'est creee qu'apres la premiere configuration.
   Future<void> _ouvrirBase() async {
     await DatabaseHelper.instance.database;
     if (!mounted) return;
 
-    AppStateScope.read(context).marquerConfigure();
+    await AppStateScope.read(context).marquerConfigure();
+    if (!mounted) return;
+
     setState(() {
       _configurationTerminee = true;
 
-      // Le code vient d'etre defini : le redemander dans la foullee serait
-      // absurde.
+      // L'application vient d'etre configuree : la demander au meme moment
+      // serait absurde.
       _verrouille = false;
     });
   }
 
-  /// Oubli du code : seule issue possible, efface preferences et base.
-  Future<void> _toutEffacer() async {
-    final confirme = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Réinitialisation'),
-        content: const Text(
-          'Le code est irrécupérable. Sa réinitialisation efface toutes les '
-          'données de l\'application : année académique, matières, '
-          'compositions, notes et programme de révision. Cette action est '
-          'définitive.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Tout effacer'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirme != true) return;
-
-    await DatabaseHelper.instance.supprimerBase();
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
-
+  /// Le verrouillage etant facultatif, un utilisateur bloque peut le couper.
+  /// Aucune donnee n'est perdue : c'est la seule raison d'edition restante.
+  Future<void> _desactiverVerrouillage() async {
+    await AppStateScope.read(context).desactiverVerrouillage();
     if (!mounted) return;
-    AppStateScope.read(context).viderProfil();
 
     setState(() {
-      _configurationTerminee = false;
-      _verrouille = true;
+      _verrouille = false;
+      _configurationTerminee = true;
     });
   }
 }

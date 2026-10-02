@@ -5,6 +5,7 @@ import '../data/database_helper.dart';
 import '../domain/moyenne.dart';
 import '../models/matiere.dart';
 import '../models/note.dart';
+import '../models/ue.dart';
 
 /// Saisie des notes et suivi des moyennes.
 class NotesScreen extends StatefulWidget {
@@ -18,9 +19,10 @@ class _NotesScreenState extends State<NotesScreen> {
   static final _formatDate = DateFormat('d MMM yyyy', 'fr_FR');
 
   bool _chargement = true;
-  List<Matiere> _matieres = [];
+  List<UeAvecMatieres> _ues = [];
   List<NoteAvecMatiere> _notes = [];
-  Map<int, double> _moyennes = {};
+  Map<int, double> _moyennesMatiere = {};
+  Map<int, double> _moyennesUe = {};
   double? _moyenneAnnee;
   double? _moyenneSemestre1;
   double? _moyenneSemestre2;
@@ -36,7 +38,7 @@ class _NotesScreenState extends State<NotesScreen> {
 
   Future<void> _charger() async {
     final annee = await DatabaseHelper.instance.recupererAnneeCourante();
-    final matieres = await DatabaseHelper.instance.recupererMatieres();
+    final ues = await DatabaseHelper.instance.recupererUes();
     final notes = await DatabaseHelper.instance.recupererToutesNotes();
 
     if (!mounted) return;
@@ -46,7 +48,7 @@ class _NotesScreenState extends State<NotesScreen> {
         _valDevoirs = double.tryParse(annee.valDevoirs) ?? 50;
         _valExam = double.tryParse(annee.valExam) ?? 50;
       }
-      _matieres = matieres;
+      _ues = ues;
       _notes = notes;
       _chargement = false;
     });
@@ -54,10 +56,19 @@ class _NotesScreenState extends State<NotesScreen> {
     _calculer();
   }
 
-  void _calculer() {
-    final moyennes = <int, double>{};
+  /// Toutes les matieres de l'annee, UE confondues : une UE directe n'a pas de
+  /// liste propre, sa matiere en est une.
+  List<Matiere> get _matieres => _ues.expand((bloc) => bloc.matieres).toList();
 
-    for (final matiere in _matieres) {
+  /// Libelle d'une matiere, prefixe de son UE quand plusieurs en portent une
+  /// du meme nom.
+  String _libelle(Matiere matiere) => matiere.libMatiere;
+
+  void _calculer() {
+    final matieres = _matieres;
+    final moyennesMatiere = <int, double>{};
+
+    for (final matiere in matieres) {
       final notesMatiere = _notes
           .where((item) => item.note.matiereId == matiere.id)
           .map((item) => item.note)
@@ -69,29 +80,42 @@ class _NotesScreenState extends State<NotesScreen> {
         notesMatiere,
         valDevoirs: _valDevoirs,
         valExam: _valExam,
+        avecDevoir: matiere.avecDevoir,
       );
 
-      if (moyenne != null) moyennes[matiere.id!] = moyenne;
+      if (moyenne != null) moyennesMatiere[matiere.id!] = moyenne;
     }
+
+    // La moyenne d'une UE est celle de ses matieres, chacune ponderee par son
+    // coefficient : le credit, lui, reste au niveau de l'UE.
+    final moyennesUe = <int, double>{};
+    for (final bloc in _ues) {
+      final moyenne = Moyenne.moyenneUe(bloc.ue, matieres, moyennesMatiere);
+      if (moyenne != null) moyennesUe[bloc.ue.id!] = moyenne;
+    }
+
+    final listeUe = _ues.map((bloc) => bloc.ue).toList();
 
     if (!mounted) return;
     setState(() {
-      _moyennes = moyennes;
-      _moyenneAnnee = Moyenne.moyenneAnnee(moyennes, _matieres);
-      _moyenneSemestre1 = Moyenne.moyenneSemestre(moyennes, _matieres, 1);
-      _moyenneSemestre2 = Moyenne.moyenneSemestre(moyennes, _matieres, 2);
+      _moyennesMatiere = moyennesMatiere;
+      _moyennesUe = moyennesUe;
+      _moyenneAnnee = Moyenne.moyenneAnnee(moyennesUe, listeUe);
+      _moyenneSemestre1 = Moyenne.moyenneSemestre(moyennesUe, listeUe, 1);
+      _moyenneSemestre2 = Moyenne.moyenneSemestre(moyennesUe, listeUe, 2);
     });
   }
 
   Future<void> _ajouterNote() async {
-    if (_matieres.isEmpty) {
-      _message('Créez d\'abord des matières dans votre année académique.');
+    final matieres = _matieres;
+    if (matieres.isEmpty) {
+      _message('Créez d\'abord des UE dans votre année académique.');
       return;
     }
 
     final resultat = await showDialog<_SaisieNote>(
       context: context,
-      builder: (_) => _DialogueNote(matieres: _matieres),
+      builder: (_) => _DialogueNote(matieres: matieres),
     );
 
     if (resultat == null || !mounted) return;
@@ -132,23 +156,21 @@ class _NotesScreenState extends State<NotesScreen> {
                 children: [
                   _resume(theme),
                   const SizedBox(height: 16),
-                  if (_matieres.isEmpty)
+                  if (_ues.isEmpty)
                     const Padding(
                       padding: EdgeInsets.all(24),
                       child: Text(
-                        'Aucune matière : configurez votre année académique '
+                        'Aucune UE : configurez votre année académique '
                         'pour pouvoir saisir des notes.',
                         textAlign: TextAlign.center,
                       ),
                     )
                   else ...[
-                    Text('Moyennes par matière',
-                        style: theme.textTheme.titleMedium),
+                    Text('Moyennes par UE', style: theme.textTheme.titleMedium),
                     const SizedBox(height: 8),
-                    ..._matieres.map(_ligneMatiere),
+                    ..._ues.map(_ligneUe),
                     const SizedBox(height: 24),
-                    Text('Dernières notes',
-                        style: theme.textTheme.titleMedium),
+                    Text('Dernières notes', style: theme.textTheme.titleMedium),
                     const SizedBox(height: 8),
                     if (_notes.isEmpty)
                       const Padding(
@@ -175,16 +197,17 @@ class _NotesScreenState extends State<NotesScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Moyennes de l\'année',
-                style: theme.textTheme.titleMedium),
+            Text('Moyennes de l\'année', style: theme.textTheme.titleMedium),
             const SizedBox(height: 12),
             _ligneResume('Année', _moyenneAnnee, theme),
             _ligneResume('Semestre 1', _moyenneSemestre1, theme),
             _ligneResume('Semestre 2', _moyenneSemestre2, theme),
             const Divider(height: 24),
             Text(
-              'Barème : devoirs ${_valDevoirs.toStringAsFixed(0)} % / '
-              'examens ${_valExam.toStringAsFixed(0)} %',
+              _valDevoirs > 0
+                  ? 'Barème : devoirs ${_valDevoirs.toStringAsFixed(0)} % / '
+                        'examens ${_valExam.toStringAsFixed(0)} %'
+                  : 'Barème : 100 % examens',
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -211,19 +234,42 @@ class _NotesScreenState extends State<NotesScreen> {
     );
   }
 
-  Widget _ligneMatiere(Matiere matiere) {
-    final moyenne = _moyennes[matiere.id];
+  /// Une UE et la moyenne de chacune de ses matieres, qui s'ouvrent au toucher.
+  Widget _ligneUe(UeAvecMatieres bloc) {
+    final ue = bloc.ue;
+    final moyenne = _moyennesUe[ue.id];
 
     return Card(
       margin: const EdgeInsets.only(bottom: 6),
-      child: ListTile(
-        leading: CircleAvatar(child: Text('${matiere.coef}')),
-        title: Text(matiere.libMatiere),
-        subtitle: Text('Semestre ${matiere.semestre}'),
+      child: ExpansionTile(
+        leading: CircleAvatar(child: Text('${ue.credit}')),
+        title: Text(ue.libelle),
+        subtitle: Text(
+          'Semestre ${ue.semestre} • ${ue.credit} crédit'
+          '${ue.credit > 1 ? 's' : ''}'
+          '${bloc.directe ? '' : ' • ${bloc.matieres.length} matières'}',
+        ),
         trailing: Text(
           Moyenne.formater(moyenne),
           style: Theme.of(context).textTheme.titleMedium,
         ),
+        children: bloc.matieres.map(_ligneMatiere).toList(),
+      ),
+    );
+  }
+
+  Widget _ligneMatiere(Matiere matiere) {
+    final moyenne = _moyennesMatiere[matiere.id];
+
+    return ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.only(left: 60, right: 16),
+      leading: CircleAvatar(radius: 12, child: Text('${matiere.coef}')),
+      title: Text(_libelle(matiere)),
+      subtitle: Text(matiere.avecDevoir ? '' : 'Sans devoir'),
+      trailing: Text(
+        Moyenne.formater(moyenne),
+        style: Theme.of(context).textTheme.bodyLarge,
       ),
     );
   }
@@ -250,7 +296,9 @@ class _NotesScreenState extends State<NotesScreen> {
         child: ListTile(
           leading: Icon(
             estExamen ? Icons.assignment_turned_in_outlined : Icons.edit_note,
-            color: estExamen ? theme.colorScheme.error : theme.colorScheme.primary,
+            color: estExamen
+                ? theme.colorScheme.error
+                : theme.colorScheme.primary,
           ),
           title: Text('${item.note.libelle} — ${item.libMatiere}'),
           subtitle: Text(_formatDate.format(item.note.date)),
@@ -290,10 +338,18 @@ class _DialogueNoteState extends State<_DialogueNote> {
   String _type = 'devoir';
   DateTime _date = DateTime.now();
 
+  /// Une matiere sans devoirs ne peut recevoir que des notes d'examen : le
+  /// segment « Devoir » disparait et le type se corrige au changement de
+  /// matiere.
+  bool get _devoirAutorise => _matiere?.avecDevoir ?? true;
+
   @override
   void initState() {
     super.initState();
     _matiere = widget.matieres.first;
+    // La premiere matiere peut etre sans devoirs : le segment « Devoir »
+    // n'existe pas, la note doit donc partir sur un examen.
+    if (!_matiere!.avecDevoir) _type = 'examen';
   }
 
   @override
@@ -353,18 +409,27 @@ class _DialogueNoteState extends State<_DialogueNote> {
                 initialValue: _matiere,
                 decoration: const InputDecoration(labelText: 'Matière'),
                 items: widget.matieres
-                    .map((matiere) => DropdownMenuItem(
-                          value: matiere,
-                          child: Text(matiere.libMatiere),
-                        ))
+                    .map(
+                      (matiere) => DropdownMenuItem(
+                        value: matiere,
+                        child: Text(matiere.libMatiere),
+                      ),
+                    )
                     .toList(),
-                onChanged: (matiere) => setState(() => _matiere = matiere),
+                onChanged: (matiere) {
+                  if (matiere == null) return;
+                  setState(() {
+                    _matiere = matiere;
+                    if (!matiere.avecDevoir) _type = 'examen';
+                  });
+                },
               ),
               const SizedBox(height: 12),
               SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(value: 'devoir', label: Text('Devoir')),
-                  ButtonSegment(value: 'examen', label: Text('Examen')),
+                segments: [
+                  if (_devoirAutorise)
+                    const ButtonSegment(value: 'devoir', label: Text('Devoir')),
+                  const ButtonSegment(value: 'examen', label: Text('Examen')),
                 ],
                 selected: {_type},
                 onSelectionChanged: (selection) =>
@@ -373,15 +438,15 @@ class _DialogueNoteState extends State<_DialogueNote> {
               const SizedBox(height: 12),
               TextFormField(
                 controller: _valeur,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Note sur 20',
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
                 ),
+                decoration: const InputDecoration(labelText: 'Note sur 20'),
                 validator: (texte) {
-                  if (texte == null || texte.isEmpty) return 'Valeur obligatoire';
-                  final valeur =
-                      double.tryParse(texte.replaceAll(',', '.'));
+                  if (texte == null || texte.isEmpty) {
+                    return 'Valeur obligatoire';
+                  }
+                  final valeur = double.tryParse(texte.replaceAll(',', '.'));
                   if (valeur == null) return 'Nombre invalide';
                   if (valeur < 0 || valeur > 20) return 'La note est sur 20';
                   return null;
@@ -392,9 +457,7 @@ class _DialogueNoteState extends State<_DialogueNote> {
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.event),
                 title: const Text('Date'),
-                subtitle: Text(
-                  DateFormat('d MMM yyyy', 'fr_FR').format(_date),
-                ),
+                subtitle: Text(DateFormat('d MMM yyyy', 'fr_FR').format(_date)),
                 onTap: _choisirDate,
                 trailing: const Icon(Icons.chevron_right),
               ),

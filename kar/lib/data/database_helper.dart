@@ -6,6 +6,7 @@ import '../models/evenement.dart';
 import '../models/matiere.dart';
 import '../models/note.dart';
 import '../models/programme.dart';
+import '../models/ue.dart';
 import 'db_platform.dart';
 
 /// Acces bas niveau a la base SQLite : cycle de vie, schema et transactions.
@@ -24,7 +25,12 @@ class DatabaseHelper {
   ///     dans les preferences, l'application devient mono-utilisateur.
   /// 3 : ajout de `note`.
   /// 4 : ajout de `evenement`.
-  static const int _versionSchema = 4;
+  /// 5 : refonte etudiant. `ecole` devient `universite`, `classe` devient
+  ///     `niveau`, `filiere` devient `faculte`, `departement` est ajoute, et
+  ///     chaque matiere indique si elle comporte des devoirs.
+  /// 6 : unite d'enseignement. `ue` porte le credit et le semestre, et chaque
+  ///     matiere y est rattachee par `ueId`.
+  static const int _versionSchema = 6;
 
   static Database? _database;
 
@@ -63,20 +69,92 @@ class DatabaseHelper {
           if (ancienVersion < 4) {
             await db.execute(_schemaEvenement);
           }
+          if (ancienVersion < 5) {
+            await _versSchemaEtudiant(db);
+          }
+          if (ancienVersion < 6) {
+            await _versSchemaUe(db);
+          }
         },
       ),
     );
   }
 
+  /// Passage au modele etudiant : nomenclature universitaire et presence ou
+  /// non de devoirs par matiere.
+  ///
+  /// Les renommages se font colonne par colonne plutot qu'en recreant la
+  /// table : `ALTER TABLE ... RENAME COLUMN` ne touche que le schema, sans
+  /// reecrire les lignes, et laisse intactes les cles etrangeres, qui
+  /// referencent la table et non ses colonnes. Recreer la table aurait
+  /// declenche les `ON DELETE CASCADE` de `matiere`, `composition` et `note`,
+  /// donc perdu toutes les donnees de l'annee.
+  ///
+  /// Le renommage de colonne demande SQLite 3.25 (2018) : il est honore par
+  /// la bibliotheque SQLite compilee pour le web et par sqflite_common_ffi,
+  /// ainsi que par tout appareil Android shipping depuis Android 10.
+  static Future<void> _versSchemaEtudiant(Database db) async {
+    await db.execute(
+      'ALTER TABLE anneeCourante RENAME COLUMN ecole TO universite',
+    );
+    await db.execute(
+      'ALTER TABLE anneeCourante RENAME COLUMN classe TO niveau',
+    );
+    await db.execute(
+      'ALTER TABLE anneeCourante RENAME COLUMN filiere TO faculte',
+    );
+    await db.execute(
+      "ALTER TABLE anneeCourante ADD COLUMN departement VARCHAR(50) "
+      "NOT NULL DEFAULT ''",
+    );
+    await db.execute(
+      'ALTER TABLE matiere ADD COLUMN avecDevoir INTEGER NOT NULL DEFAULT 1',
+    );
+  }
+
+  /// Introduction des unites d'enseignement.
+  ///
+  /// `ue` est creee avant la colonne `ueId`, et chaque matiere devient une UE
+  /// directe a son image : elle conserve son nom, son coefficient et son
+  /// credit. Aucune donnee n'est perdue, et aucune matiere ne se retrouve sans
+  /// UE.
+  static Future<void> _versSchemaUe(Database db) async {
+    await db.execute(_schemaUe);
+    await db.execute(
+      'ALTER TABLE matiere ADD COLUMN ueId INTEGER REFERENCES ue(id) '
+      'ON DELETE CASCADE',
+    );
+
+    final matieres = await db.query('matiere', orderBy: 'id ASC');
+
+    for (final matiere in matieres) {
+      final ueId = await db.insert('ue', {
+        'libelle': matiere['libMatiere'],
+        'credit': matiere['credit'],
+        'semestre': matiere['semestre'],
+        'anneeId': matiere['anneeId'],
+      });
+
+      await db.update(
+        'matiere',
+        {'ueId': ueId},
+        where: 'id = ?',
+        whereArgs: [matiere['id']],
+      );
+    }
+  }
+
   static const List<String> _schemaComplet = [
+    _schemaUe,
     '''
     CREATE TABLE anneeCourante (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         anneeDebut INTEGER NOT NULL,
         anneeFin INTEGER NOT NULL,
-        ecole VARCHAR(100) NOT NULL,
-        classe VARCHAR(30) NOT NULL,
-        filiere VARCHAR(50) NOT NULL,
+        universite VARCHAR(100) NOT NULL,
+        niveau VARCHAR(30) NOT NULL,
+        faculte VARCHAR(50) NOT NULL,
+        departement VARCHAR(50) NOT NULL DEFAULT '',
         valDevoirs INTEGER NOT NULL,
         valExam INTEGER NOT NULL,
         statutAnnee TEXT CHECK(statutAnnee IN ('en cours', 'terminée'))
@@ -90,6 +168,8 @@ class DatabaseHelper {
       credit INTEGER NOT NULL,
       anneeId INTEGER NOT NULL,
       semestre INTEGER NOT NULL,
+      avecDevoir INTEGER NOT NULL DEFAULT 1,
+      ueId INTEGER REFERENCES ue(id) ON DELETE CASCADE,
       FOREIGN KEY (anneeId) REFERENCES anneeCourante(id) ON DELETE CASCADE
     )
     ''',
@@ -123,6 +203,19 @@ class DatabaseHelper {
     _schemaNote,
     _schemaEvenement,
   ];
+
+  /// Unite d'enseignement : porteuse du credit, elle regroupe une ou
+  /// plusieurs matieres.
+  static const String _schemaUe = '''
+    CREATE TABLE ue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      libelle VARCHAR(100) NOT NULL,
+      credit INTEGER NOT NULL,
+      semestre INTEGER NOT NULL,
+      anneeId INTEGER NOT NULL,
+      FOREIGN KEY (anneeId) REFERENCES anneeCourante(id) ON DELETE CASCADE
+    )
+    ''';
 
   /// Notes : un devoir ou un examen rapporte pour une matiere.
   static const String _schemaNote = '''
@@ -166,36 +259,51 @@ class DatabaseHelper {
 
   // ---------------------------------------------------------------- annee
 
-  /// Insere une annee et ses matieres dans une seule transaction.
+  /// Insere une annee, ses unites d'enseignement et leurs matieres dans une
+  /// seule transaction.
+  ///
+  /// Les matieres sont inserees apres leur UE, dont SQLite vient d'attribuer
+  /// l'identifiant : c'est lui qui est reporte dans `ueId`. Le credit de l'UE
+  /// est egalement recopie sur ses matieres, qui n'en portent pas d'autre.
   ///
   /// Si l'annee existe deja, une [StateError] est levee : une double
   /// soumission ne doit pas creer une seconde annee en silence.
-  Future<int> ajouterAnneeEtMatieres(
+  Future<int> ajouterAnneeEtUes(
     AnneeCourante annee,
-    List<Matiere> matieres,
+    List<UeAvecMatieres> unites,
   ) async {
     final db = await database;
 
     return db.transaction((txn) async {
       final doublon = await txn.query(
         'anneeCourante',
-        where: 'anneeDebut = ? AND anneeFin = ? AND ecole = ?',
-        whereArgs: [annee.anneeDebut, annee.anneeFin, annee.ecole],
+        where: 'anneeDebut = ? AND anneeFin = ? AND universite = ?',
+        whereArgs: [annee.anneeDebut, annee.anneeFin, annee.universite],
         limit: 1,
       );
 
       if (doublon.isNotEmpty) {
         throw StateError(
           'L\'annee ${annee.anneeDebut}-${annee.anneeFin} est deja enregistree '
-          'pour ${annee.ecole}.',
+          'pour ${annee.universite}.',
         );
       }
 
       final anneeId = await txn.insert('anneeCourante', annee.toMap());
 
-      for (final matiere in matieres) {
-        matiere.anneeId = anneeId;
-        await txn.insert('matiere', matiere.toMap());
+      for (final bloc in unites) {
+        final ue = bloc.ue;
+        ue.anneeId = anneeId;
+        final ueId = await txn.insert('ue', ue.toMap());
+
+        for (final matiere in bloc.matieres) {
+          matiere.anneeId = anneeId;
+          matiere.ueId = ueId;
+          await txn.insert('matiere', {
+            ...matiere.toMap(),
+            'credit': ue.credit,
+          });
+        }
       }
 
       return anneeId;
@@ -228,10 +336,46 @@ class DatabaseHelper {
       'matiere',
       where: 'anneeId = ?',
       whereArgs: [annee!.id],
-      orderBy: 'semestre ASC, libMatiere ASC',
+      orderBy: 'semestre ASC, ueId ASC, libMatiere ASC',
     );
 
     return resultat.map(Matiere.fromMap).toList();
+  }
+
+  /// Les unites d'enseignement de l'annee en cours, chacune avec ses
+  /// matieres.
+  ///
+  /// Le credit et le semestre sont lus sur l'UE : une UE composite garde son
+  /// credit, ses matieres n'en ont pas en propre.
+  Future<List<UeAvecMatieres>> recupererUes() async {
+    final db = await database;
+
+    final annee = await recupererAnneeCourante();
+    if (annee?.id == null) return [];
+
+    final resultatUes = await db.query(
+      'ue',
+      where: 'anneeId = ?',
+      whereArgs: [annee!.id],
+      orderBy: 'semestre ASC, libelle ASC',
+    );
+
+    final resultatMatieres = await db.query(
+      'matiere',
+      where: 'anneeId = ?',
+      whereArgs: [annee.id],
+      orderBy: 'libMatiere ASC',
+    );
+
+    final matieres = resultatMatieres.map(Matiere.fromMap).toList();
+
+    return resultatUes.map((ligne) {
+      final ue = Ue.fromMap(ligne);
+      return UeAvecMatieres(
+        ue: ue,
+        matieres: matieres.where((matiere) => matiere.ueId == ue.id).toList(),
+      );
+    }).toList();
   }
 
   // ---------------------------------------------------------- composition
@@ -275,17 +419,16 @@ class DatabaseHelper {
        WHERE date(c.dateCompo) BETWEEN date(?) AND date(?)
        ORDER BY c.dateCompo ASC, m.libMatiere ASC
       ''',
-      [
-        _formatDate(debut),
-        _formatDate(fin),
-      ],
+      [_formatDate(debut), _formatDate(fin)],
     );
 
     return resultat
-        .map((ligne) => CompositionAvecMatiere(
-              composition: Composition.fromMap(ligne),
-              libMatiere: ligne['libMatiere'] as String,
-            ))
+        .map(
+          (ligne) => CompositionAvecMatiere(
+            composition: Composition.fromMap(ligne),
+            libMatiere: ligne['libMatiere'] as String,
+          ),
+        )
         .toList();
   }
 
@@ -338,11 +481,13 @@ class DatabaseHelper {
     ''');
 
     return resultat
-        .map((ligne) => NoteAvecMatiere(
-              note: Note.fromMap(ligne),
-              libMatiere: ligne['libMatiere'] as String,
-              coef: ligne['coef'] as int,
-            ))
+        .map(
+          (ligne) => NoteAvecMatiere(
+            note: Note.fromMap(ligne),
+            libMatiere: ligne['libMatiere'] as String,
+            coef: ligne['coef'] as int,
+          ),
+        )
         .toList();
   }
 
@@ -363,10 +508,7 @@ class DatabaseHelper {
     return db.transaction((txn) async {
       final programmeId = await txn.insert(
         'programme',
-        Programme(
-          jour: jour,
-          statut: StatutProgramme.nonRespecte,
-        ).toMap(),
+        Programme(jour: jour, statut: StatutProgramme.nonRespecte).toMap(),
       );
 
       for (final matiereId in matiereIds) {
@@ -420,10 +562,9 @@ class DatabaseHelper {
         }
       }
 
-      programmes.add(ProgrammeAvecMatieres(
-        programme: programme,
-        matieres: matieres,
-      ));
+      programmes.add(
+        ProgrammeAvecMatieres(programme: programme, matieres: matieres),
+      );
     }
 
     return programmes;

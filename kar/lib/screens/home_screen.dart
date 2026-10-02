@@ -14,9 +14,10 @@ import 'reglages_screen.dart';
 import 'annee_courante_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  final VoidCallback onDeconnexion;
+  /// Appele quand l'utilisateur demande a reverrouiller l'application.
+  final VoidCallback onVerrouiller;
 
-  const HomeScreen({required this.onDeconnexion, super.key});
+  const HomeScreen({required this.onVerrouiller, super.key});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -56,18 +57,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final db = DatabaseHelper.instance;
 
-    final compositions = await db.recupererCompositions(
-      debut: debut,
-      fin: fin,
-    );
-    final programmes = await db.recupererProgrammes(
-      debut: debut,
-      fin: fin,
-    );
-    final evenements = await db.recupererEvenements(
-      debut: debut,
-      fin: fin,
-    );
+    final compositions = await db.recupererCompositions(debut: debut, fin: fin);
+    final programmes = await db.recupererProgrammes(debut: debut, fin: fin);
+    final evenements = await db.recupererEvenements(debut: debut, fin: fin);
 
     if (!mounted) return;
 
@@ -102,9 +94,7 @@ class _HomeScreenState extends State<HomeScreen> {
           titre: 'Révision',
           sousTitre: item.matieres.isEmpty
               ? 'Aucune matière'
-              : item.matieres
-                  .map((matiere) => matiere.libMatiere)
-                  .join(', '),
+              : item.matieres.map((matiere) => matiere.libMatiere).join(', '),
           icone: Icons.menu_book_outlined,
           couleur: AppTheme.secondaire,
         ),
@@ -139,7 +129,8 @@ class _HomeScreenState extends State<HomeScreen> {
   static DateTime _journee(DateTime date) =>
       DateTime(date.year, date.month, date.day);
 
-  List<_Entree> _entreesDuJour() => _agenda[_journee(_jourSelectionne)] ?? const [];
+  List<_Entree> _entreesDuJour() =>
+      _agenda[_journee(_jourSelectionne)] ?? const [];
 
   void _message(String texte) {
     ScaffoldMessenger.of(context)
@@ -191,7 +182,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (matiere == null || !mounted) return;
 
-    final type = await _demanderType();
+    final type = await _demanderType(matiere);
     if (type == null || !mounted) return;
 
     try {
@@ -207,42 +198,56 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (!mounted) return;
-    _message('${type == 'devoir' ? 'Devoir' : 'Examen'} planifié le '
-        '${jour.day}/${jour.month}/${jour.year}');
+    _message(
+      '${type == 'devoir' ? 'Devoir' : 'Examen'} planifié le '
+      '${jour.day}/${jour.month}/${jour.year}',
+    );
     _chargerAgenda();
   }
 
-  Future<String?> _demanderType() {
+  Future<String?> _demanderType(Matiere matiere) {
+    // Une matiere sans devoirs n'accepte qu'un examen.
+    final options = <({String valeur, IconData icone, String libelle})>[
+      if (matiere.avecDevoir)
+        (valeur: 'devoir', icone: Icons.assignment_outlined, libelle: 'Devoir'),
+      (
+        valeur: 'examen',
+        icone: Icons.assignment_turned_in_outlined,
+        libelle: 'Examen',
+      ),
+    ];
+
     return showDialog<String>(
       context: context,
       builder: (dialogContext) => SimpleDialog(
-        title: const Text('Type de composition'),
+        title: Text('Type de composition — ${matiere.libMatiere}'),
         children: [
-          SimpleDialogOption(
-            onPressed: () => Navigator.of(dialogContext).pop('devoir'),
-            child: const ListTile(
-              leading: Icon(Icons.assignment_outlined),
-              title: Text('Devoir'),
+          for (final option in options)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(dialogContext).pop(option.valeur),
+              child: ListTile(
+                leading: Icon(option.icone),
+                title: Text(option.libelle),
+              ),
             ),
-          ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.of(dialogContext).pop('examen'),
-            child: const ListTile(
-              leading: Icon(Icons.assignment_turned_in_outlined),
-              title: Text('Examen'),
-            ),
-          ),
         ],
       ),
     );
   }
 
-  Future<void> _confirmerDeconnexion() async {
+  Future<void> _confirmerVerrouillage() async {
+    final appState = AppStateScope.read(context);
+
     final confirme = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Verrouiller'),
-        content: const Text('Le code vous sera demandé à la réouverture.'),
+        content: Text(
+          appState.appareilSecurise
+              ? 'L\'empreinte, le visage ou le code de l\'appareil vous sera '
+                    'demandé à la réouverture.'
+              : 'Le code vous sera demandé à la réouverture.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -256,13 +261,11 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
 
-    if (confirme == true) widget.onDeconnexion();
+    if (confirme == true) widget.onVerrouiller();
   }
 
   Future<void> _ouvrir(Widget ecran) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => ecran),
-    );
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => ecran));
 
     if (!mounted) return;
     await _verifierAnnee();
@@ -290,9 +293,10 @@ class _HomeScreenState extends State<HomeScreen> {
         nomComplet: profil.nomComplet,
         initiales: profil.initiales,
         libelleTheme: appState.nomMenuBasculeTheme,
+        verrouillageActif: appState.verrouillageActif,
         onProfilTap: () => _ouvrir(const ReglagesScreen()),
         onThemeTap: appState.basculerTheme,
-        onDeconnexion: _confirmerDeconnexion,
+        onVerrouiller: _confirmerVerrouillage,
       ),
       body: SafeArea(
         child: _chargement
@@ -348,35 +352,32 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   _legende(),
                   _agendaDuJour(),
-                  _grille(
-                    [
-                      _Carte(
-                        titre: 'Compositions',
-                        sousTitre: 'Devoirs et examens à venir.',
-                        icone: Icons.assignment_outlined,
-                        onTap: () => _ouvrir(const CompositionsScreen()),
-                      ),
-                      _Carte(
-                        titre: 'Programme de révision',
-                        sousTitre: 'Planifiez vos révisions.',
-                        icone: Icons.calendar_month_outlined,
-                        onTap: () =>
-                            _ouvrir(const ProgrammeRevisionScreen()),
-                      ),
-                      _Carte(
-                        titre: 'Notes',
-                        sousTitre: 'Saisissez et suivez vos moyennes.',
-                        icone: Icons.grading_outlined,
-                        onTap: () => _ouvrir(const NotesScreen()),
-                      ),
-                      _Carte(
-                        titre: 'Événements',
-                        sousTitre: 'Votre agenda personnel.',
-                        icone: Icons.event_outlined,
-                        onTap: () => _ouvrir(const EvenementsScreen()),
-                      ),
-                    ],
-                  ),
+                  _grille([
+                    _Carte(
+                      titre: 'Compositions',
+                      sousTitre: 'Devoirs et examens à venir.',
+                      icone: Icons.assignment_outlined,
+                      onTap: () => _ouvrir(const CompositionsScreen()),
+                    ),
+                    _Carte(
+                      titre: 'Programme de révision',
+                      sousTitre: 'Planifiez vos révisions.',
+                      icone: Icons.calendar_month_outlined,
+                      onTap: () => _ouvrir(const ProgrammeRevisionScreen()),
+                    ),
+                    _Carte(
+                      titre: 'Notes',
+                      sousTitre: 'Saisissez et suivez vos moyennes.',
+                      icone: Icons.grading_outlined,
+                      onTap: () => _ouvrir(const NotesScreen()),
+                    ),
+                    _Carte(
+                      titre: 'Événements',
+                      sousTitre: 'Votre agenda personnel.',
+                      icone: Icons.event_outlined,
+                      onTap: () => _ouvrir(const EvenementsScreen()),
+                    ),
+                  ]),
                 ],
               ),
       ),
@@ -423,7 +424,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (!_anneeConfiguree) {
       return _Bandeau(
-        message: 'Aucune année académique configurée. Commencez par en créer '
+        message:
+            'Aucune année académique configurée. Commencez par en créer '
             'une.',
         action: 'Configurer',
         onPressed: () => _ouvrir(const AnneeCouranteScreen()),
@@ -512,7 +514,7 @@ class _HomeScreenState extends State<HomeScreen> {
             crossAxisCount: colonnes,
             mainAxisSpacing: 12,
             crossAxisSpacing: 12,
-            mainAxisExtent: 132,
+            mainAxisExtent: MediaQuery.of(context).size.height * 0.20,
           ),
           children: cartes,
         );
@@ -546,7 +548,7 @@ class _Carte extends StatelessWidget {
     required this.titre,
     required this.sousTitre,
     required this.icone,
-    required this.onTap,
+    required this.onTap
   });
 
   @override
@@ -616,10 +618,7 @@ class _Bandeau extends StatelessWidget {
       child: ListTile(
         leading: const Icon(Icons.info_outline),
         title: Text(message),
-        trailing: FilledButton.tonal(
-          onPressed: onPressed,
-          child: Text(action),
-        ),
+        trailing: FilledButton.tonal(onPressed: onPressed, child: Text(action)),
       ),
     );
   }
@@ -629,17 +628,19 @@ class _Tiroir extends StatelessWidget {
   final String nomComplet;
   final String initiales;
   final String libelleTheme;
+  final bool verrouillageActif;
   final VoidCallback onProfilTap;
   final VoidCallback onThemeTap;
-  final VoidCallback onDeconnexion;
+  final VoidCallback onVerrouiller;
 
   const _Tiroir({
     required this.nomComplet,
     required this.initiales,
     required this.libelleTheme,
+    required this.verrouillageActif,
     required this.onProfilTap,
     required this.onThemeTap,
-    required this.onDeconnexion,
+    required this.onVerrouiller,
   });
 
   @override
@@ -651,7 +652,9 @@ class _Tiroir extends StatelessWidget {
         padding: EdgeInsets.zero,
         children: [
           DrawerHeader(
-            decoration: BoxDecoration(color: theme.colorScheme.primaryContainer),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primaryContainer,
+            ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -687,11 +690,14 @@ class _Tiroir extends StatelessWidget {
             onTap: onThemeTap,
           ),
           const Divider(),
-          ListTile(
-            leading: const Icon(Icons.lock_outline),
-            title: const Text('Verrouiller'),
-            onTap: onDeconnexion,
-          ),
+          // Verrouiller n'a de sens que si le verrouillage est actif : sinon
+          // l'application s'ouvrira de nouveau sans rien demander.
+          if (verrouillageActif)
+            ListTile(
+              leading: const Icon(Icons.lock_outline),
+              title: const Text('Verrouiller'),
+              onTap: onVerrouiller,
+            ),
         ],
       ),
     );

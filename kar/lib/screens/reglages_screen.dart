@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../services/pin_service.dart';
+import '../services/securite_service.dart';
 import '../state/app_state.dart';
 
-/// Reglages : profil local et code PIN.
+/// Reglages : profil local et verrouillage.
 class ReglagesScreen extends StatefulWidget {
   const ReglagesScreen({super.key});
 
@@ -48,10 +48,9 @@ class _ReglagesScreenState extends State<ReglagesScreen> {
       return;
     }
 
-    await AppStateScope.read(context).profil.enregistrer(
-          nom: nom,
-          prenoms: prenoms,
-        );
+    await AppStateScope.read(
+      context,
+    ).profil.enregistrer(nom: nom, prenoms: prenoms);
 
     if (!mounted) return;
     setState(() => _modifie = false);
@@ -59,18 +58,64 @@ class _ReglagesScreenState extends State<ReglagesScreen> {
   }
 
   Future<void> _changerPin() async {
-    final resultat = await showDialog<_ChangementPin>(
-      context: context,
-      builder: (_) => const _DialogueChangementPin(),
-    );
+    final pin = await _demanderPin();
+    if (pin == null || !mounted) return;
 
-    if (resultat == null) return;
-    if (!mounted) return;
-
-    await AppStateScope.read(context).pinService.definirPin(resultat.pin);
+    await AppStateScope.read(context).securiteService.definirPinSecours(pin);
 
     if (!mounted) return;
     _message('Code modifié.');
+  }
+
+  Future<String?> _demanderPin() {
+    return showDialog<String>(
+      context: context,
+      builder: (_) => const _DialogueChangementPin(),
+    );
+  }
+
+  /// Activation du verrouillage.
+  ///
+  /// L'appareil sait s'authentifier : la confirmation est demandee par lui-meme,
+  /// ce qui evite d'activer une protection que l'on ne saurait pas lever.
+  /// Sinon, un code de l'application est choisi.
+  Future<void> _activerVerrouillage() async {
+    final appState = AppStateScope.read(context);
+
+    if (appState.appareilSecurise) {
+      final reussi = await appState.securiteService.authentifier(
+        raison: 'Confirmez votre identité pour activer le verrouillage',
+      );
+      if (!mounted) return;
+
+      if (!reussi) {
+        _message('Authentification refusée, verrouillage inchangé.');
+        return;
+      }
+    } else {
+      final pin = await _demanderPin();
+      if (pin == null || !mounted) return;
+
+      await appState.securiteService.definirPinSecours(pin);
+      if (!mounted) return;
+    }
+
+    await appState.activerVerrouillage();
+    if (!mounted) return;
+    _message('Verrouillage activé.');
+  }
+
+  Future<void> _desactiverVerrouillage() async {
+    final appState = AppStateScope.read(context);
+    await appState.desactiverVerrouillage();
+    if (!mounted) return;
+    _message('Verrouillage désactivé.');
+  }
+
+  String _sousTitreVerrouillage(AppState appState) {
+    return appState.appareilSecurise
+        ? 'Empreinte, visage ou code de l\'appareil.'
+        : 'Un code à ${SecuriteService.longueurPin} chiffres sera demandé.';
   }
 
   void _message(String texte) {
@@ -81,16 +126,15 @@ class _ReglagesScreenState extends State<ReglagesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final appState = AppStateScope.of(context);
+
     return Scaffold(
       appBar: AppBar(title: const Text('Réglages')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            Text(
-              'Profil',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text('Profil', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             TextField(
               controller: _nom,
@@ -111,19 +155,31 @@ class _ReglagesScreenState extends State<ReglagesScreen> {
               child: const Text('Enregistrer'),
             ),
             const Divider(height: 48),
-            Text(
-              'Sécurité',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text('Sécurité', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
-            ListTile(
+            SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.pin_outlined),
-              title: const Text('Modifier le code'),
-              subtitle: const Text('Quatre chiffres'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _changerPin,
+              secondary: const Icon(Icons.lock_outline),
+              title: const Text('Verrouillage'),
+              subtitle: Text(_sousTitreVerrouillage(appState)),
+              value: appState.verrouillageActif,
+              onChanged: (actif) =>
+                  actif ? _activerVerrouillage() : _desactiverVerrouillage(),
             ),
+            // Le code n'est demande que si l'appareil ne sait pas
+            // s'authentifier : sinon il n'est qu'un repli.
+            if (appState.verrouillageActif && !appState.appareilSecurise)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.pin_outlined),
+                title: const Text('Modifier le code'),
+                subtitle: Text(
+                  'Quatre chiffres, demandés si la sécurité de l\'appareil '
+                  'échoue',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: _changerPin,
+              ),
           ],
         ),
       ),
@@ -136,18 +192,11 @@ class _ReglagesScreenState extends State<ReglagesScreen> {
   }
 }
 
-class _ChangementPin {
-  final String pin;
-
-  const _ChangementPin(this.pin);
-}
-
 class _DialogueChangementPin extends StatefulWidget {
   const _DialogueChangementPin();
 
   @override
-  State<_DialogueChangementPin> createState() =>
-      _DialogueChangementPinState();
+  State<_DialogueChangementPin> createState() => _DialogueChangementPinState();
 }
 
 class _DialogueChangementPinState extends State<_DialogueChangementPin> {
@@ -164,18 +213,18 @@ class _DialogueChangementPinState extends State<_DialogueChangementPin> {
 
   void _valider() {
     if (!(_form.currentState?.validate() ?? false)) return;
-    Navigator.of(context).pop(_ChangementPin(_pin.text));
+    Navigator.of(context).pop(_pin.text);
   }
 
   @override
   Widget build(BuildContext context) {
     final formatters = [
       FilteringTextInputFormatter.digitsOnly,
-      LengthLimitingTextInputFormatter(PinService.longueurPin),
+      LengthLimitingTextInputFormatter(SecuriteService.longueurPin),
     ];
 
     return AlertDialog(
-      title: const Text('Nouveau code'),
+      title: const Text('Code de l\'application'),
       content: Form(
         key: _form,
         child: Column(
@@ -196,11 +245,11 @@ class _DialogueChangementPinState extends State<_DialogueChangementPin> {
               obscureText: true,
               keyboardType: TextInputType.number,
               inputFormatters: formatters,
-              decoration:
-                  const InputDecoration(labelText: 'Confirmation du code'),
-              validator: (valeur) => valeur == _pin.text
-                  ? null
-                  : 'Les codes ne correspondent pas',
+              decoration: const InputDecoration(
+                labelText: 'Confirmation du code',
+              ),
+              validator: (valeur) =>
+                  valeur == _pin.text ? null : 'Les codes ne correspondent pas',
             ),
           ],
         ),
@@ -217,10 +266,10 @@ class _DialogueChangementPinState extends State<_DialogueChangementPin> {
 
   String? _validerPin(String? valeur) {
     if (valeur == null || valeur.isEmpty) return 'Choisissez un code';
-    if (valeur.length != PinService.longueurPin) {
-      return 'Le code doit contenir ${PinService.longueurPin} chiffres';
+    if (valeur.length != SecuriteService.longueurPin) {
+      return 'Le code doit contenir ${SecuriteService.longueurPin} chiffres';
     }
-    if (valeur == PinService.codeInterdit) {
+    if (valeur == SecuriteService.codeInterdit) {
       return 'Ce code est trop évident, choisissez-en un autre';
     }
     return null;

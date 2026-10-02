@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:kar/data/database_helper.dart';
 import 'package:kar/main.dart';
+import 'package:kar/services/securite_service.dart';
 import 'package:kar/state/app_state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -52,7 +53,7 @@ void main() {
     }
   }
 
-  testWidgets('configuration, code pin, puis tableau de bord', (tester) async {
+  testWidgets('configuration du profil, puis tableau de bord', (tester) async {
     final appState = AppState();
     await appState.initialiser();
 
@@ -61,32 +62,106 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Etape 1 : le profil.
+    // Le profil, et lui seul : aucun code n'est demande.
     expect(find.text('Bienvenue'), findsOneWidget);
 
     await tester.enterText(find.byType(TextFormField).at(0), 'Dupont');
     await tester.enterText(find.byType(TextFormField).at(1), 'Amina');
-    await tester.tap(find.text('Continuer'));
-    await tester.pumpAndSettle();
-
-    // Etape 2 : le code.
-    expect(find.text('Code de sécurité'), findsOneWidget);
-
-    await tester.enterText(find.byType(TextFormField).at(0), '1234');
-    await tester.enterText(find.byType(TextFormField).at(1), '1234');
     await tester.tap(find.text('Terminer'));
     await laisserLaBaseRepondre(tester);
 
-    // Etape 3 : le tableau de bord, sans annee academique. Le code vient
-    // d'etre defini, il ne doit pas etre redemande.
+    // Le tableau de bord s'affiche : le verrouillage n'est pas actif, donc
+    // rien n'est demande.
     expect(find.text('Déverrouiller'), findsNothing);
-    expect(find.text('Aucune année académique configurée. '
-        'Commencez par en créer une.'), findsOneWidget);
+    expect(
+      find.text(
+        'Aucune année académique configurée. '
+        'Commencez par en créer une.',
+      ),
+      findsOneWidget,
+    );
     expect(appState.aConfigurer, isFalse);
+    expect(appState.verrouillageActif, isFalse);
+    expect(appState.profil.nomComplet, 'Dupont Amina');
 
-    // Le verrouillage ramene a l'ecran de saisie du code.
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getBool('config_terminee'), isTrue);
+
+    // L'etat de theme se recharge depuis les preferences.
     await tester.tap(find.byTooltip('Thème sombre'));
     await tester.pumpAndSettle();
     expect(appState.themeSombre, isTrue);
+  });
+
+  testWidgets('verrouillage actif : le code est demande au redemarrage', (
+    tester,
+  ) async {
+    // Une installation deja configuree, verrouillage active, appareil sans
+    // securite : le code de l'application fait foi.
+    SharedPreferences.setMockInitialValues({'config_terminee': true});
+    final service = SecuriteService();
+    await service.definirPinSecours('1234');
+    await service.activer();
+
+    final appState = AppState();
+    await appState.initialiser();
+
+    expect(appState.aConfigurer, isFalse);
+    expect(appState.verrouillageActif, isTrue);
+    expect(appState.appareilSecurise, isFalse);
+
+    await tester.pumpWidget(
+      AppStateScope(state: appState, child: const KarApp()),
+    );
+    await laisserLaBaseRepondre(tester);
+
+    expect(find.text('Déverrouiller'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '1234');
+    await tester.tap(find.text('Déverrouiller'));
+    await laisserLaBaseRepondre(tester);
+
+    expect(find.text('Déverrouiller'), findsNothing);
+    expect(
+      find.text(
+        'Aucune année académique configurée. '
+        'Commencez par en créer une.',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('verrouillage actif, code oublie : il suffit de le couper', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({'config_terminee': true});
+    final service = SecuriteService();
+    await service.definirPinSecours('1234');
+    await service.activer();
+
+    final appState = AppState();
+    await appState.initialiser();
+
+    await tester.pumpWidget(
+      AppStateScope(state: appState, child: const KarApp()),
+    );
+    await laisserLaBaseRepondre(tester);
+
+    await tester.tap(find.text('Je ne peux pas me déverrouiller'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Désactiver'));
+    await laisserLaBaseRepondre(tester);
+
+    // Aucune donnee n'est effacee : seul le verrouillage est coupe.
+    expect(appState.verrouillageActif, isFalse);
+    expect(await service.pinSecoursDefini(), isTrue);
+    expect(find.text('Déverrouiller'), findsNothing);
+    expect(
+      find.text(
+        'Aucune année académique configurée. '
+        'Commencez par en créer une.',
+      ),
+      findsOneWidget,
+    );
   });
 }

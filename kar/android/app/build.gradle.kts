@@ -40,6 +40,12 @@ kotlin {
     }
 }
 
+dependencies {
+    // Theme AppCompat des styles de l'activite, requis par la boite de
+    // dialogue de la securite de l'appareil (local_auth).
+    implementation("androidx.appcompat:appcompat:1.7.1")
+}
+
 flutter {
     source = "../.."
 }
